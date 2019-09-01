@@ -1,5 +1,6 @@
 Google I/O Android App
 ======================
+[![Build Status](https://travis-ci.org/google/iosched.svg?branch=master)](https://travis-ci.org/google/iosched)
 
 Google I/O is a developer conference held each year with three days of deep
 technical content featuring technical sessions and hundreds of demonstrations
@@ -7,7 +8,7 @@ from developers showcasing their technologies.
 
 This project is the Android app for the conference.
 
-For a simpler fork of the app, check out the [Android Dev Summit App in the adssched branch](https://github.com/google/iosched/tree/adssched). In this variant some features are removed, such as reservations and the map screen, and new features are added: notifications, Instant App support and more modern dependencies. 
+For a simpler fork of the app, check out the [Android Dev Summit App in the adssched branch](https://github.com/google/iosched/tree/adssched). In this variant some features are removed, such as reservations and the map screen, and Instant App support is added. 
 
 # Features
 
