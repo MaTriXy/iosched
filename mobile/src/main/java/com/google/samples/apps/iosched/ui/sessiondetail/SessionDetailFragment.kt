@@ -26,11 +26,13 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.core.app.ShareCompat
 import androidx.core.net.toUri
+import androidx.core.view.doOnLayout
 import androidx.core.view.forEach
 import androidx.core.view.updatePadding
 import androidx.fragment.app.FragmentActivity
+import androidx.fragment.app.activityViewModels
+import androidx.fragment.app.viewModels
 import androidx.lifecycle.Observer
-import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.fragment.FragmentNavigatorExtras
 import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.RecyclerView.RecycledViewPool
@@ -47,9 +49,7 @@ import com.google.samples.apps.iosched.shared.di.MapFeatureEnabledFlag
 import com.google.samples.apps.iosched.shared.domain.users.SwapRequestParameters
 import com.google.samples.apps.iosched.shared.notifications.AlarmBroadcastReceiver
 import com.google.samples.apps.iosched.shared.result.EventObserver
-import com.google.samples.apps.iosched.shared.util.activityViewModelProvider
 import com.google.samples.apps.iosched.shared.util.toEpochMilli
-import com.google.samples.apps.iosched.shared.util.viewModelProvider
 import com.google.samples.apps.iosched.ui.MainNavigationFragment
 import com.google.samples.apps.iosched.ui.messages.SnackbarMessageManager
 import com.google.samples.apps.iosched.ui.prefs.SnackbarPreferenceViewModel
@@ -67,20 +67,21 @@ import com.google.samples.apps.iosched.ui.signin.SignInDialogFragment
 import com.google.samples.apps.iosched.ui.signin.SignInDialogFragment.Companion.DIALOG_SIGN_IN
 import com.google.samples.apps.iosched.util.doOnApplyWindowInsets
 import com.google.samples.apps.iosched.util.openWebsiteUrl
-import com.google.samples.apps.iosched.util.postponeEnterTransition
+import dagger.hilt.android.AndroidEntryPoint
 import timber.log.Timber
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Named
 
+@AndroidEntryPoint
 class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.Listener {
 
     private var shareString = ""
 
-    @Inject lateinit var viewModelFactory: ViewModelProvider.Factory
-
     @Inject lateinit var snackbarMessageManager: SnackbarMessageManager
 
-    private lateinit var sessionDetailViewModel: SessionDetailViewModel
+    private val sessionDetailViewModel: SessionDetailViewModel by viewModels()
+    private val snackbarPrefsViewModel: SnackbarPreferenceViewModel by activityViewModels()
 
     @Inject lateinit var analyticsHelper: AnalyticsHelper
 
@@ -104,12 +105,10 @@ class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View? {
-        sessionDetailViewModel = viewModelProvider(viewModelFactory)
-
         sharedElementReturnTransition =
             TransitionInflater.from(context).inflateTransition(R.transition.speaker_shared_enter)
         // Delay the enter transition until speaker image has loaded.
-        postponeEnterTransition(500L)
+        postponeEnterTransition(500L, TimeUnit.MILLISECONDS)
 
         val themedInflater =
             inflater.cloneInContext(ContextThemeWrapper(requireActivity(), style.AppTheme_Detail))
@@ -127,7 +126,7 @@ class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     R.id.menu_item_share -> {
-                        ShareCompat.IntentBuilder.from(activity)
+                        ShareCompat.IntentBuilder.from(requireActivity())
                             .setType("text/plain")
                             .setText(shareString)
                             .setChooserTitle(R.string.intent_chooser_session_detail)
@@ -178,72 +177,106 @@ class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.
             }
         }
 
-        sessionDetailViewModel.session.observe(this, Observer {
-            detailsAdapter.speakers = it?.speakers?.toList() ?: emptyList()
-        })
-
-        sessionDetailViewModel.relatedUserSessions.observe(this, Observer {
+        sessionDetailViewModel.relatedUserSessions.observe(viewLifecycleOwner, Observer {
             detailsAdapter.related = it ?: emptyList()
         })
 
-        sessionDetailViewModel.session.observe(this, Observer {
+        sessionDetailViewModel.session.observe(viewLifecycleOwner, Observer {
             session = it
             shareString = if (it == null) {
                 ""
             } else {
                 getString(R.string.share_text_session_detail, it.title, it.sessionUrl)
             }
+            detailsAdapter.speakers = it?.speakers?.toList() ?: emptyList()
+            // ViewBinding is binding the session so we should wait until after the session has been
+            // laid out to report fully drawn. Note that we are *not* waiting for the speaker images
+            // to be downloaded and displayed because we are showing a placeholder image. Thus the
+            // screen appears fully drawn to the user. In terms of performance, this allows us to
+            // obtain a stable start up times by not including the network call to download images,
+            // which can vary greatly based on uncontrollable factors, mainly network speed.
+            binding.sessionDetailRecyclerView.doOnLayout {
+                // If this activity was launched from a deeplink, then the logcat statement is
+                // printed. Otherwise, SessionDetailFragment is started from the MainActivity which
+                // would have already reported fully drawn to the framework.
+                activity?.reportFullyDrawn()
+            }
         })
 
-        sessionDetailViewModel.navigateToYouTubeAction.observe(this, EventObserver { youtubeUrl ->
-            openYoutubeUrl(youtubeUrl)
-        })
+        sessionDetailViewModel.navigateToYouTubeAction.observe(
+            viewLifecycleOwner,
+            EventObserver { youtubeUrl ->
+                openYoutubeUrl(youtubeUrl)
+            }
+        )
 
-        sessionDetailViewModel.navigateToSessionAction.observe(this, EventObserver { sessionId ->
-            findNavController().navigate(toSessionDetail(sessionId))
-        })
+        sessionDetailViewModel.navigateToSessionAction.observe(
+            viewLifecycleOwner,
+            EventObserver { sessionId ->
+                findNavController().navigate(toSessionDetail(sessionId))
+            }
+        )
 
-        val snackbarPreferenceViewModel: SnackbarPreferenceViewModel =
-            activityViewModelProvider(viewModelFactory)
         setUpSnackbar(
             sessionDetailViewModel.snackBarMessage,
             binding.snackbar,
             snackbarMessageManager,
             actionClickListener = {
-                snackbarPreferenceViewModel.onStopClicked()
+                snackbarPrefsViewModel.onStopClicked()
             }
         )
 
-        sessionDetailViewModel.errorMessage.observe(this, EventObserver { errorMsg ->
+        sessionDetailViewModel.errorMessage.observe(viewLifecycleOwner, EventObserver { errorMsg ->
             // TODO: Change once there's a way to show errors to the user
             Toast.makeText(this.context, errorMsg, Toast.LENGTH_LONG).show()
         })
 
-        sessionDetailViewModel.navigateToSignInDialogAction.observe(this, EventObserver {
-            openSignInDialog(requireActivity())
-        })
-        sessionDetailViewModel.navigateToRemoveReservationDialogAction.observe(this, EventObserver {
-            openRemoveReservationDialog(requireActivity(), it)
-        })
-        sessionDetailViewModel.navigateToSwapReservationDialogAction.observe(this, EventObserver {
-            openSwapReservationDialog(requireActivity(), it)
-        })
-
-        sessionDetailViewModel.shouldShowNotificationsPrefAction.observe(this, EventObserver {
-            if (it) {
-                openNotificationsPreferenceDialog()
+        sessionDetailViewModel.navigateToSignInDialogAction.observe(
+            viewLifecycleOwner,
+            EventObserver {
+                openSignInDialog(requireActivity())
             }
-        })
+        )
+        sessionDetailViewModel.navigateToRemoveReservationDialogAction.observe(
+            viewLifecycleOwner,
+            EventObserver {
+                openRemoveReservationDialog(requireActivity(), it)
+            }
+        )
+        sessionDetailViewModel.navigateToSwapReservationDialogAction.observe(
+            viewLifecycleOwner,
+            EventObserver {
+                openSwapReservationDialog(requireActivity(), it)
+            }
+        )
 
-        sessionDetailViewModel.navigateToSpeakerDetail.observe(this, EventObserver { speakerId ->
-            val sharedElement = findSpeakerHeadshot(binding.sessionDetailRecyclerView, speakerId)
-            val extras = FragmentNavigatorExtras(sharedElement to sharedElement.transitionName)
-            findNavController().navigate(toSpeakerDetail(speakerId), extras)
-        })
+        sessionDetailViewModel.shouldShowNotificationsPrefAction.observe(
+            viewLifecycleOwner,
+            EventObserver {
+                if (it) {
+                    openNotificationsPreferenceDialog()
+                }
+            }
+        )
 
-        sessionDetailViewModel.navigateToSessionFeedbackAction.observe(this, EventObserver {
-            openFeedbackDialog(it)
-        })
+        sessionDetailViewModel.navigateToSpeakerDetail.observe(
+            viewLifecycleOwner,
+            EventObserver { speakerId ->
+                val sharedElement = findSpeakerHeadshot(
+                    binding.sessionDetailRecyclerView,
+                    speakerId
+                )
+                val extras = FragmentNavigatorExtras(sharedElement to sharedElement.transitionName)
+                findNavController().navigate(toSpeakerDetail(speakerId), extras)
+            }
+        )
+
+        sessionDetailViewModel.navigateToSessionFeedbackAction.observe(
+            viewLifecycleOwner,
+            EventObserver {
+                openFeedbackDialog(it)
+            }
+        )
 
         // When opened from the post session notification, open the feedback dialog
         requireNotNull(arguments).apply {
@@ -251,7 +284,7 @@ class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.
                     ?: SessionDetailFragmentArgs.fromBundle(this).sessionId
             val openRateSession =
                 arguments?.getBoolean(AlarmBroadcastReceiver.EXTRA_SHOW_RATE_SESSION_FLAG) ?: false
-            sessionDetailViewModel.showFeedbackButton.observe(this@SessionDetailFragment, Observer {
+            sessionDetailViewModel.showFeedbackButton.observe(viewLifecycleOwner, Observer {
                 if (it == true && openRateSession) {
                     openFeedbackDialog(sessionId)
                 }
@@ -270,7 +303,6 @@ class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.
             // added from the navigation controller.
             val sessionId = getString(EXTRA_SESSION_ID)
                 ?: SessionDetailFragmentArgs.fromBundle(this).sessionId
-
             sessionDetailViewModel.setSessionId(sessionId)
         }
     }
@@ -287,16 +319,13 @@ class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.
         // Observing the changes from Fragment because data binding doesn't work with menu items.
         val menu = binding.sessionDetailBottomAppBar.menu
         val starMenu = menu.findItem(R.id.menu_item_star)
-        sessionDetailViewModel.shouldShowStarInBottomNav.observe(this, Observer { showStar ->
-            showStar?.let {
-                if (it) {
-                    starMenu.setVisible(true)
-                } else {
-                    starMenu.setVisible(false)
-                }
+        sessionDetailViewModel.shouldShowStarInBottomNav.observe(
+            viewLifecycleOwner,
+            Observer { showStar ->
+                starMenu.isVisible = showStar == true
             }
-        })
-        sessionDetailViewModel.userEvent.observe(this, Observer { userEvent ->
+        )
+        sessionDetailViewModel.userEvent.observe(viewLifecycleOwner, Observer { userEvent ->
             userEvent?.let {
                 if (it.isStarred) {
                     starMenu.setIcon(R.drawable.ic_star)
@@ -307,7 +336,7 @@ class SessionDetailFragment : MainNavigationFragment(), SessionFeedbackFragment.
         })
 
         var titleUpdated = false
-        sessionDetailViewModel.session.observe(this, Observer {
+        sessionDetailViewModel.session.observe(viewLifecycleOwner, Observer {
             if (it != null && !titleUpdated) {
                 sessionTitle = it.title
                 activity?.let { activity ->
